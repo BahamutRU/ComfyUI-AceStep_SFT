@@ -355,7 +355,7 @@ acestep/
 
 | Commit | What |
 |--------|------|
-| (pending) | **Timbre reference (reference_audio)** — forward patch + transformer_options |
+| `834b4b5` | **Timbre reference (reference_audio)** — forward patch + transformer_options |
 | `c675f24` | **Retake (variation)** support |
 | `cd1a1d0` | **Analysis model CPU offload** (fix Transcriber OOM on 16 GB) |
 | `92529ff` | Analysis models → `ComfyUI/models/`, `.gitignore` |
