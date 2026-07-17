@@ -112,6 +112,20 @@ ACE-Step supports a **cover** task that re-styles an existing audio's structure 
 
 `cover_source` and `latent_or_audio` are mutually exclusive. In cover mode the duration is locked to the source audio length (matching the official pipeline), and the LLM audio-code generation is skipped (it is unused for covers). Requires a `VAE` to be connected (the source is VAE-encoded into the conditioning latent).
 
+### 🎨 Timbre Reference (reference_audio)
+
+Borrow the **timbre/tone** (vocal/instrument character) of a reference audio while composing fresh music:
+
+- **`reference_audio`** (`AUDIO`): a timbre reference. The model runs as normal text-to-music — full-noise start, user-set duration, fresh composition — but the condition encoder receives this reference, so the output borrows its vocal/instrumental tone.
+
+**Timbre reference vs. cover:** distinct operations.
+- **Cover** (`cover_source`) copies the source's **structure** (rhythm, arrangement, form) and re-styles it.
+- **Timbre reference** (`reference_audio`) composes a **new** piece that only shares the reference's tone (e.g. same singer's vocal character on different music).
+
+`reference_audio` and `cover_source` are mutually exclusive (they share the model's encoder channel but need different context semantics). The reference is sampled as 3×10s segments (front/middle/back → 30s, ≤750 latent frames), matching the official `reference_audio` pipeline. Requires a `VAE`. Generation starts from full noise and duration is **not** locked to the reference (unlike cover).
+
+> Implementation note: stock ComfyUI couples the `reference_audio_timbre_latents` conditioning key to cover mode (`is_covers=True`). To get pure timbre without cover, this node delivers the reference through `transformer_options` and patches `diffusion_model.forward` so the encoder receives the real timbre while the context stays text2music (silence, `is_covers=False`).
+
 ### 🔁 Retake (variations)
 
 Generate variations of the same seed via a variance-preserving noise blend:
@@ -406,6 +420,9 @@ Outputs:
 - **cover_source**: Source audio (AUDIO or LATENT) to cover/remix. Connect to run in cover mode (`is_covers=True`). Mutually exclusive with `latent_or_audio`.
 - **cover_noise_strength** (0.0-1.0, default: 0.0): Start closeness to source. 0.0 = full noise (max deviation), 1.0 = pure source (closest).
 - **audio_cover_strength** (0.0-1.0, default: 1.0): Fraction of steps with cover conditioning. <1.0 switches to text-to-music conditioning after that fraction of steps (more "remix").
+
+#### Timbre Reference
+- **reference_audio**: Timbre/style reference (AUDIO). Borrows the reference's vocal/instrument tone while composing fresh music (full-noise start, user duration). Mutually exclusive with `cover_source`. Requires VAE.
 
 #### Retake (variations)
 - **retake_variance** (0.0-1.0, default: 0.0): 0.0 = identical to base seed, 1.0 = fully independent draw. Intermediate = related variation.

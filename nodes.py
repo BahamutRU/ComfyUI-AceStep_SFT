@@ -308,6 +308,56 @@ def _build_non_cover_conditioning(processed_conditioning, silence_latent):
     return non_cover
 
 
+def _make_timbre_forward_wrapper(original_forward, ref_latent, target_dtype):
+    """Wrap AceStepConditionGenerationModel.forward to inject a timbre reference.
+
+    The model's condition encoder receives timbre via `refer_audio` (shape
+    [B, 64, T], see ace_step15.py:1124). In text2music mode `extra_conds`
+    supplies a silence latent there. To use a real timbre reference WITHOUT
+    triggering cover (is_covers=True), we don't pass `reference_audio_timbre_latents`
+    through conditioning -- so extra_conds keeps is_covers=False + silence --
+    and instead override `refer_audio` here, fetched from transformer_options.
+
+    Only the encoder-facing refer_audio is swapped; src_latents/context stay as
+    text2music (silence), so the model composes fresh music that merely borrows
+    the reference's timbre -- matching the official reference_audio behavior.
+    """
+    def wrapper(self, *args, **kwargs):
+        to = kwargs.get("transformer_options", {}) or {}
+        # Only inject when this generation actually carries a timbre reference,
+        # so the wrapper is a safe no-op for every other generation.
+        if to.get("timbre_reference_latents") is not None:
+            # refer_audio kwarg shape in forward is [B, 64, T]; pad to noise T if needed.
+            refer_audio = kwargs.get("refer_audio", None)
+            noise_t = None
+            if refer_audio is not None:
+                noise_t = refer_audio.shape[-1]
+            ref = ref_latent
+            # Match batch + length to the current refer_audio so downstream
+            # movedim/encoder ops see the expected shape.
+            if noise_t is not None:
+                if ref.shape[-1] < noise_t:
+                    pad = noise_t - ref.shape[-1]
+                    ref = F.pad(ref, (0, pad))
+                elif ref.shape[-1] > noise_t:
+                    ref = ref[..., :noise_t]
+            # Take device/dtype from the existing refer_audio (set by extra_conds),
+            # which is already on the right device and dtype for the model.
+            target_device = refer_audio.device if refer_audio is not None else ref.device
+            target_dtype_final = target_dtype
+            if refer_audio is not None and refer_audio.is_floating_point():
+                target_dtype_final = refer_audio.dtype
+            ref = ref.to(device=target_device, dtype=target_dtype_final)
+            # Expand batch if the conditioning batch is larger.
+            if refer_audio is not None and ref.shape[0] < refer_audio.shape[0]:
+                ref = ref.repeat(math.ceil(refer_audio.shape[0] / ref.shape[0]), 1, 1)[:refer_audio.shape[0]]
+            kwargs["refer_audio"] = ref
+            # Mark it so prepare_condition's tokenizer still runs on a real signal
+            # but is_covers stays False (we did not set the cover conditioning key).
+        return original_forward(self, *args, **kwargs)
+    return wrapper
+
+
 def _apply_omega_scale(model_output, omega_scale):
     if abs(omega_scale) < 1e-8:
         return model_output
@@ -453,6 +503,57 @@ def _build_source_latent(vae, source_input, batch_size, latent_length, vae_sr, u
         )[:batch_size]
 
     return latent_image
+
+
+def _build_reference_latent(vae, reference_input, vae_sr, use_tiled_vae):
+    """Encode a timbre reference audio into a <=750-frame VAE latent.
+
+    Mirrors the official pipeline (process_reference_audio + infer_refer_latent):
+    sample 3x10s segments (front/middle/back) concatenated to 30s, then VAE-encode
+    to ~750 latent frames (30s @ 25 Hz). Returns [1, 64, <=750] on the VAE device.
+    This latent is fed to the model's condition encoder as timbre guidance.
+    """
+    if not _is_audio_payload(reference_input):
+        raise ValueError("reference_audio must be an AUDIO payload.")
+
+    waveform = _normalize_audio_to_stereo_48k(
+        reference_input["waveform"], reference_input["sample_rate"], vae_sr
+    )
+
+    target_samples = 30 * vae_sr        # 30s total
+    segment_frames = 10 * vae_sr        # 10s per segment
+
+    # If shorter than 30s, tile by repeating so we still have 3 segments.
+    if waveform.shape[-1] < target_samples:
+        repeat_times = math.ceil(target_samples / max(waveform.shape[-1], 1))
+        waveform = waveform.repeat(1, 1, repeat_times)
+
+    total_frames = waveform.shape[-1]
+    segment_size = total_frames // 3
+
+    def _segment_slice(start_region, idx):
+        lo = idx * segment_size
+        # Pick the middle of each third (deterministic; official uses random).
+        start = lo + max(0, (segment_size - segment_frames) // 2) if idx < 2 \
+            else max(0, total_frames - segment_frames)
+        start = min(start, max(0, total_frames - segment_frames))
+        return waveform[:, :, start:start + segment_frames]
+
+    front = _segment_slice(0, 0)
+    middle = _segment_slice(0, 1)
+    back = _segment_slice(0, 2)
+    ref_waveform = torch.cat([front, middle, back], dim=-1)
+    # Ensure exactly 30s (in case of rounding).
+    ref_waveform = ref_waveform[:, :, :target_samples]
+
+    # VAE-encode -> [1, 64, T] (T ~= 750). Trim to the official 750-frame cap.
+    ref_latent = _vae_encode_with_optional_tiling(
+        vae, ref_waveform.movedim(1, -1), use_tiled_vae
+    )
+    max_ref_frames = 750
+    if ref_latent.shape[-1] > max_ref_frames:
+        ref_latent = ref_latent[..., :max_ref_frames]
+    return ref_latent
 
 
 def _get_source_latent_metadata(source_input):
@@ -2855,6 +2956,15 @@ class AceStepSFTGenerate:
                         "about the source."
                     ),
                 }),
+                "reference_audio": ("AUDIO", {
+                    "tooltip": (
+                        "Timbre/style reference audio (vocal/instrument tone). The model "
+                        "composes fresh music (full-noise text2music start, user-set "
+                        "duration) but borrows the timbre of this reference via the encoder. "
+                        "Distinct from cover: cover copies the source structure; this only "
+                        "borrows tone. Mutually exclusive with cover_source. Requires VAE."
+                    ),
+                }),
                 "cover_noise_strength": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
                     "tooltip": (
@@ -2911,6 +3021,9 @@ class AceStepSFTGenerate:
             cover_src = input_types.get("cover_source")
             if cover_src is not None and cover_src not in ("AUDIO", "LATENT"):
                 return "cover_source must be AUDIO or LATENT"
+            ref_audio = input_types.get("reference_audio")
+            if ref_audio is not None and ref_audio != "AUDIO":
+                return "reference_audio must be AUDIO"
         return True
 
     def generate(
@@ -2954,6 +3067,7 @@ class AceStepSFTGenerate:
         cover_source=None,
         cover_noise_strength=0.0,
         audio_cover_strength=1.0,
+        reference_audio=None,
         retake_variance=0.0,
         retake_seed=0,
     ):
@@ -2982,6 +3096,24 @@ class AceStepSFTGenerate:
             # later). Ignore the standalone denoise parameter so it can't trip the
             # "denoise < 1.0 requires latent_or_audio" guard above.
             denoise = 1.0
+
+        # Timbre reference (reference_audio) is mutually exclusive with cover:
+        # cover copies the source structure (is_covers=True), reference only
+        # borrows timbre via the encoder (is_covers=False). They share the same
+        # encoder channel but need different context semantics, so pick one.
+        reference_active = reference_audio is not None and _is_audio_payload(reference_audio)
+        if reference_active:
+            if cover_source is not None:
+                raise ValueError(
+                    "reference_audio and cover_source are mutually exclusive. "
+                    "Use cover_source to copy structure; use reference_audio to "
+                    "borrow timbre only."
+                )
+            if vae is None:
+                raise ValueError(
+                    "VAE is required for reference_audio (it encodes the reference "
+                    "into the timbre conditioning latent)."
+                )
 
         source_latent_meta = _get_source_latent_metadata(latent_or_audio)
 
@@ -3142,6 +3274,27 @@ class AceStepSFTGenerate:
             model_sampling_obj = ModelSamplingShifted(model.model.model_config)
             model_sampling_obj.set_parameters(shift=shift, multiplier=1.0)
             model.add_object_patch("model_sampling", model_sampling_obj)
+
+            # --- Timbre reference patch (reference_audio) ---
+            # Build the <=750-frame reference latent and route it to the model's
+            # condition encoder via transformer_options + a forward wrapper. We do
+            # NOT pass reference_audio_timbre_latents through conditioning, so
+            # extra_conds keeps is_covers=False + a silence context (text2music),
+            # and only the encoder-facing refer_audio is swapped to the real timbre.
+            if reference_active:
+                ref_latent = _build_reference_latent(vae, reference_audio, vae_sr, use_tiled_vae)
+                # Deliver the reference to the model forward via transformer_options.
+                model.model_options.setdefault("transformer_options", {})
+                model.model_options["transformer_options"]["timbre_reference_latents"] = ref_latent
+                # Patch diffusion_model.forward to inject the timbre into the encoder.
+                original_forward = model.get_model_object("diffusion_model.forward")
+                target_dtype = comfy.model_management.cast_to_device(
+                    ref_latent, ref_latent.device, torch.float32
+                ).dtype if ref_latent.is_floating_point() else torch.float32
+                wrapped = _make_timbre_forward_wrapper(
+                    original_forward, ref_latent, model.model.dtype if hasattr(model.model, "dtype") else target_dtype
+                )
+                model.add_object_patch("diffusion_model.forward", wrapped)
 
             custom_sigmas = None
 

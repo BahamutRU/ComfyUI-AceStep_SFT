@@ -194,12 +194,32 @@ All three: mostly prompt-instruction differences (`TASK_INSTRUCTIONS`,
 Requires **base** model (50 steps) — not reachable on turbo/sft/merge.
 **Lower priority** unless user switches to base model.
 
-### 5c. reference_audio (timbre reference) — distinct from cover
+### 5c. reference_audio (timbre reference) — PORTED
 Official: `reference_audio` (≤750 frames, 3×10s) is a *separate* optional input
-from `src_audio`. Used by all tasks for timbre/style guidance. Was in this node's
-history (`e3b014a "reference_audio bugfix"`) but **removed** in a later commit.
-Could be restored as a standalone conditioning input alongside cover. The core
-node `comfy_extras/nodes_ace.py:ReferenceAudio` already exists for this.
+from `src_audio`. Used by all tasks for timbre/style guidance.
+
+**Ported** as node input `reference_audio` (AUDIO) on Generate. Mutually exclusive
+with `cover_source`. Implementation (NOT via the standard conditioning key, which
+ComfyUI couples to cover):
+- `_build_reference_latent` (`nodes.py`): VAE-encodes the reference as 3×10s
+  segments (front/middle/back → 30s, ≤750 frames), matching official
+  `process_reference_audio` + `infer_refer_latent`.
+- The reference is delivered via `model.model_options["transformer_options"]
+  ["timbre_reference_latents"]` (bypasses extra_conds entirely).
+- `_make_timbre_forward_wrapper` patches `diffusion_model.forward` via
+  `add_object_patch("diffusion_model.forward", wrapped)`. The wrapper reads the
+  reference from transformer_options and swaps the encoder-facing `refer_audio`
+  kwarg (which extra_conds set to silence) to the real timbre.
+- Result: `is_covers=False` + silence context (text2music) + real timbre in the
+  encoder — matches official `text2music + reference_audio` behavior (full-noise
+  start, user duration, fresh composition borrowing tone).
+
+**Why the patch is needed:** stock ComfyUI's `ACEStep15.extra_conds`
+(`model_base.py:2189-2196`) forces `is_covers=True` whenever
+`reference_audio_timbre_latents` is non-empty, and `encode_model_conds`
+(`samplers.py:955`) lets extra_conds overwrite any preset is_covers. The
+transformer_options channel avoids that gate. Verified end-to-end: forward
+wrapped, refer_audio swapped to real timbre (not silence), no-op without timbre.
 
 ### 5d. Retake (variation) — PORTED
 Official: `modeling_acestep_v15_turbo.py:2042-2045`:
@@ -299,8 +319,7 @@ way to carry per-step data.
 
 1. **Repaint** (inpaint) — highest value, hardest. See §5a. Needs
    `sampler_post_cfg_function` + waveform splice. ~2-3 sessions.
-2. **reference_audio** (timbre) — restore removed feature, moderate. See §5c.
-   Standalone conditioning input. ~1 session.
+2. ~~**reference_audio** (timbre)~~ — ✅ DONE (see §5c).
 3. ~~**Retake** (variations)~~ — ✅ DONE (see §5d).
 4. **extract/lego/complete** — only if switching to base model. See §5b.
 
@@ -336,6 +355,8 @@ acestep/
 
 | Commit | What |
 |--------|------|
+| (pending) | **Timbre reference (reference_audio)** — forward patch + transformer_options |
+| `c675f24` | **Retake (variation)** support |
 | `cd1a1d0` | **Analysis model CPU offload** (fix Transcriber OOM on 16 GB) |
 | `92529ff` | Analysis models → `ComfyUI/models/`, `.gitignore` |
 | `e0f473c` | **Cover (remix) task** ported |
