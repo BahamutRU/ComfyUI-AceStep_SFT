@@ -278,6 +278,36 @@ def _build_processed_erg_conditioning(processed_conditioning, erg_scale):
     return erg_conditioning if has_erg_branch else None
 
 
+def _build_non_cover_conditioning(processed_conditioning, silence_latent):
+    """Clone a *processed* cover conditioning into a text2music (non-cover) branch.
+
+    The official cover sampler switches to a non-cover (silence-sourced)
+    conditioning after `cover_steps` (audio_cover_strength < 1.0), so the result
+    can break free from the source ("remix" feel). This helper produces the
+    processed-conditioning equivalent of that non-cover branch by flipping the
+    cover flags: ``is_covers`` -> False and ``refer_audio`` -> a silence latent.
+    """
+    if processed_conditioning is None:
+        return None
+
+    non_cover = []
+    for cond_item in processed_conditioning:
+        cloned = cond_item.copy()
+        model_conds = cloned.get("model_conds")
+        if model_conds is not None:
+            cloned_model_conds = model_conds.copy()
+            import comfy.conds as _conds
+            cloned_model_conds["is_covers"] = _conds.CONDConstant(False)
+            refer = cloned_model_conds.get("refer_audio")
+            if refer is not None and hasattr(refer, "_copy_with"):
+                cloned_model_conds["refer_audio"] = refer._copy_with(silence_latent)
+            else:
+                cloned_model_conds["refer_audio"] = _conds.CONDRegular(silence_latent)
+            cloned["model_conds"] = cloned_model_conds
+        non_cover.append(cloned)
+    return non_cover
+
+
 def _apply_omega_scale(model_output, omega_scale):
     if abs(omega_scale) < 1e-8:
         return model_output
@@ -2681,6 +2711,33 @@ class AceStepSFTGenerate:
                     "default": 3.0, "min": 0.0, "max": 5.0, "step": 0.1,
                     "tooltip": "Timestep schedule shift. ACEStep15 default is 3.0.",
                 }),
+                # ---- Cover (remix) ----
+                "cover_source": ("AUDIO,LATENT", {
+                    "tooltip": (
+                        "Source audio to cover/remix. When connected, the model is run in "
+                        "cover mode (is_covers=True): it re-styles the source structure to "
+                        "match the caption/lyrics. This is NOT the same as the img2img "
+                        "'latent_or_audio' refinement input, which does not tell the model "
+                        "about the source."
+                    ),
+                }),
+                "cover_noise_strength": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": (
+                        "Cover only. 0.0 = start sampling from full noise (default, lets the "
+                        "model deviate most from the source). 1.0 = start from the source "
+                        "latent (closest to the source). Intermediate values mix source + noise."
+                    ),
+                }),
+                "audio_cover_strength": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": (
+                        "Cover only. Fraction of steps that keep cover conditioning. 1.0 = "
+                        "cover conditioning for the whole run (stays closest to source). "
+                        "<1.0 = switch to text-to-music conditioning after this fraction of "
+                        "steps, so the result breaks free from the source ('remix' feel)."
+                    ),
+                }),
             },
         }
 
@@ -2699,6 +2756,9 @@ class AceStepSFTGenerate:
             src = input_types.get("latent_or_audio")
             if src is not None and src not in ("AUDIO", "LATENT"):
                 return "latent_or_audio must be AUDIO or LATENT"
+            cover_src = input_types.get("cover_source")
+            if cover_src is not None and cover_src not in ("AUDIO", "LATENT"):
+                return "cover_source must be AUDIO or LATENT"
         return True
 
     def generate(
@@ -2739,6 +2799,9 @@ class AceStepSFTGenerate:
         cfg_interval_start=0.0,
         cfg_interval_end=1.0,
         shift=3.0,
+        cover_source=None,
+        cover_noise_strength=0.0,
+        audio_cover_strength=1.0,
     ):
         if denoise < 1.0 and latent_or_audio is None:
             raise ValueError(
@@ -2747,6 +2810,24 @@ class AceStepSFTGenerate:
 
         if latent_or_audio is not None and not (_is_audio_payload(latent_or_audio) or _is_latent_payload(latent_or_audio)):
             raise ValueError("latent_or_audio must receive AUDIO or LATENT.")
+
+        if cover_source is not None:
+            # cover_source must be AUDIO or LATENT (validated by VALIDATE_INPUTS via
+            # input_types, but also guard against non-payload runtime values here).
+            if not (_is_audio_payload(cover_source) or _is_latent_payload(cover_source)):
+                raise ValueError("cover_source must receive AUDIO or LATENT.")
+            # cover_source + latent_or_audio are mutually exclusive: both want to drive
+            # the starting latent / source conditioning. Use cover_source for remixing.
+            if latent_or_audio is not None:
+                raise ValueError(
+                    "cover_source and latent_or_audio are mutually exclusive. "
+                    "Use cover_source for cover/remix; use latent_or_audio for "
+                    "img2img refinement."
+                )
+            # In cover mode, denoise is driven solely by cover_noise_strength (set
+            # later). Ignore the standalone denoise parameter so it can't trip the
+            # "denoise < 1.0 requires latent_or_audio" guard above.
+            denoise = 1.0
 
         source_latent_meta = _get_source_latent_metadata(latent_or_audio)
 
@@ -2771,6 +2852,48 @@ class AceStepSFTGenerate:
             batch_size = latent_or_audio["samples"].shape[0]
             latent_length = latent_or_audio["samples"].shape[-1]
             duration = latent_length * 1920.0 / vae_sr
+
+        # --- Cover (remix) source conditioning ---
+        # In cover mode the model is told about the source audio so it can re-style
+        # the source structure to match the caption/lyrics (is_covers=True). This is
+        # routed through the `reference_audio_timbre_latents` conditioning key, which
+        # ACEStep15.extra_conds (comfy/model_base.py) auto-detects and turns into
+        # is_covers=True + FSQ-tokenized source context latents.
+        cover_active = cover_source is not None and (
+            _is_audio_payload(cover_source) or _is_latent_payload(cover_source)
+        )
+        if cover_active:
+            if vae is None:
+                raise ValueError(
+                    "VAE is required for cover_source (it encodes the source audio "
+                    "into the conditioning latent)."
+                )
+            # Cover duration follows the source audio length. The official pipeline
+            # unconditionally locks duration to src_audio length for cover tasks
+            # (generate_music.py:339), so we override any user duration here.
+            src_dur = _get_source_duration_seconds(cover_source, vae_sr)
+            if src_dur is not None and src_dur > 0:
+                duration = src_dur
+                latent_length = max(10, round(duration * vae_sr / 1920))
+                duration = latent_length * 1920.0 / vae_sr
+
+            # Build the cover source latent ([B, 64, T]). Reuse the same helper as
+            # the img2img path so AUDIO and LATENT inputs are handled identically.
+            cover_latent = _build_source_latent(
+                vae, cover_source, batch_size, latent_length, vae_sr, use_tiled_vae
+            )
+
+            # Inject as cover conditioning. conditioning_set_values expects a value
+            # for the `reference_audio_timbre_latents` key; extra_conds indexes the
+            # last element and slices [:, :, :T], so we wrap the [B,64,T] tensor in
+            # a single-element list.
+            cover_cond_value = [cover_latent]
+            positive = node_helpers.conditioning_set_values(
+                positive, {"reference_audio_timbre_latents": cover_cond_value}
+            )
+            negative = node_helpers.conditioning_set_values(
+                negative, {"reference_audio_timbre_latents": cover_cond_value}
+            )
 
         # --- 2. Create starting latent ---
         if latent_or_audio is not None:
@@ -2799,6 +2922,18 @@ class AceStepSFTGenerate:
             latent_image,
             source_latent_meta["downscale_ratio_spacial"] if source_latent_meta is not None else None,
         )
+
+        # Cover: optionally start sampling from the (partly-noised) source latent.
+        # cover_noise_strength maps directly onto ComfyUI's latent_image + denoise:
+        # the sampler applies noise_scaling(sigmas[0], noise, latent_image) which is
+        # xt = sigma*noise + (1-sigma)*latent_image -- the same flow-matching blend as
+        # the official renoise(src_latents, t) with t = 1 - cover_noise_strength.
+        # So: strength 0 -> full noise (denoise 1.0), strength 1 -> pure source (denoise 0).
+        if cover_active and cover_noise_strength > 0.0:
+            latent_image = cover_latent.to(
+                device=latent_image.device, dtype=latent_image.dtype
+            )
+            denoise = max(0.0, min(1.0, 1.0 - cover_noise_strength))
 
         # --- 3. Text-only conditioning branch detection ---
         text_only_positive = _build_text_only_conditioning(positive)
@@ -2851,11 +2986,20 @@ class AceStepSFTGenerate:
             interval_step_start = int(steps * ((1.0 - official_interval) / 2.0))
             interval_step_end = int(steps * (official_interval / 2.0 + 0.5))
             # --- 9. Apply guidance via model patching ---
+            # cover_swap_active: cover with audio_cover_strength < 1.0 switches the
+            # conditioning to a non-cover (text2music) branch after cover_steps, so the
+            # result can break free from the source. This needs a calc_cond_batch hook.
+            cover_swap_active = (
+                cover_active
+                and audio_cover_strength < 1.0
+                and audio_cover_strength > 0.0
+            )
             if (
                 (guidance_mode in ("apg", "adg") and cfg > 1.0)
                 or split_guidance_active
                 or _erg_tau_from_scale(erg_scale) < 0.999999
                 or abs(omega_scale) > 1e-8
+                or cover_swap_active
             ):
                 momentum_buf = MomentumBuffer(momentum=apg_momentum)
                 norm_thresh = apg_norm_threshold
@@ -2871,6 +3015,30 @@ class AceStepSFTGenerate:
                 }
                 use_adg = (guidance_mode == "adg")
                 erg_active = _erg_tau_from_scale(erg_scale) < 0.999999
+
+                # Cover mid-sample switch setup. cover_steps = number of initial steps
+                # that keep cover conditioning; after that we run the non-cover branch.
+                # Mirrors modeling_acestep_v15_turbo.py:2091 (cover_steps = int(num_steps * audio_cover_strength)).
+                cover_steps = int(steps * max(0.0, min(1.0, audio_cover_strength))) if cover_swap_active else steps
+                # Silence latent for the non-cover branch, built lazily once we know the
+                # batched latent shape (it is created inside calc_cond_batch_function on
+                # first use from the input x).
+                cover_swap_state = {"silence": None, "non_cover_built": False}
+
+                def _cover_non_cover_cond(cond, x):
+                    """Return a non-cover copy of the processed `cond`.
+
+                    The silence latent (matching the batched refer_audio shape) is built
+                    once from the first input x and reused. ComfyUI's get_silence_latent
+                    produces a [1, 64, T] tensor matching the refer_audio format.
+                    """
+                    import comfy.ldm.ace.ace_step15 as _ace
+                    if cover_swap_state["silence"] is None:
+                        # refer_audio is [B, 64, T]; build silence at the latent length
+                        # of the current input (T = x.shape[2]).
+                        sil = _ace.get_silence_latent(x.shape[2], x.device)
+                        cover_swap_state["silence"] = sil.to(dtype=x.dtype)
+                    return _build_non_cover_conditioning(cond, cover_swap_state["silence"]) or cond
 
                 def get_step_context(sigma, cond_scale):
                     sigma_value = float(sigma.flatten()[0])
@@ -2919,6 +3087,13 @@ class AceStepSFTGenerate:
                     _, step_index, _, _, _ = get_step_context(sigma, cfg)
                     branch_state["text_denoised"] = None
                     branch_state["erg_denoised"] = None
+
+                    # Cover mid-sample switch: after `cover_steps`, run the non-cover
+                    # (text2music / silence-sourced) conditioning so the output can
+                    # deviate from the source. Mirrors modeling_acestep_v15_turbo.py
+                    # switching to the precomputed non-cover conditioning branch.
+                    if cover_swap_active and step_index >= cover_steps:
+                        cond = _cover_non_cover_cond(cond, x)
 
                     if not split_guidance_active and not erg_active:
                         return comfy.samplers.calc_cond_batch(
@@ -3021,7 +3196,7 @@ class AceStepSFTGenerate:
 
                     return _apply_omega_scale(v_guided * sigma_r, omega_scale)
 
-                if split_guidance_active or erg_active:
+                if split_guidance_active or erg_active or cover_swap_active:
                     model.set_model_sampler_calc_cond_batch_function(
                         calc_cond_batch_function
                     )

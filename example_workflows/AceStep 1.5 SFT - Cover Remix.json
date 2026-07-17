@@ -1,0 +1,520 @@
+{
+  "id": "cover-remix-workflow",
+  "revision": 0,
+  "last_node_id": 301,
+  "last_link_id": 900,
+  "nodes": [
+    {
+      "id": 124,
+      "type": "Reroute",
+      "pos": [
+        1677.7493033310777,
+        675.3247728609072
+      ],
+      "size": [
+        75,
+        26
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "",
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "*",
+          "links": []
+        }
+      ],
+      "properties": {
+        "showOutputText": false,
+        "horizontal": false,
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.7",
+          "input_ue_unconnectable": {}
+        }
+      }
+    },
+    {
+      "id": 204,
+      "type": "AceStepSFTLoraLoader",
+      "pos": [
+        527.1061340529068,
+        -532.6373201880806
+      ],
+      "size": [
+        395.81582313326123,
+        128.0453358191777
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 885
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 886
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": []
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "links": [
+            884
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "jeankassio/ComfyUI-AceStep_SFT",
+        "ver": "d8b7c6728354ebf651fefd4a283d47e325eb50a2",
+        "Node name for S&R": "AceStepSFTLoraLoader"
+      },
+      "widgets_values": [
+        "Audio\\PedroSampaio\\Lora\\best_comfyui.safetensors",
+        0.9,
+        1
+      ]
+    },
+    {
+      "id": 205,
+      "type": "AceStepSFTModelLoader",
+      "pos": [
+        525.6959479405707,
+        -777.0194884267354
+      ],
+      "size": [
+        397.443678464016,
+        170
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            885
+          ]
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "links": [
+            886
+          ]
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "links": []
+        }
+      ],
+      "properties": {
+        "aux_id": "jeankassio/ComfyUI-AceStep_SFT",
+        "ver": "d8b7c6728354ebf651fefd4a283d47e325eb50a2",
+        "Node name for S&R": "AceStepSFTModelLoader"
+      },
+      "widgets_values": [
+        "Audio\\acestep_v1.5_sft_xl.safetensors",
+        "Audio\\qwen_0.6b_ace15.safetensors",
+        "Audio\\qwen_4b_ace15.safetensors",
+        "Audio\\ace_1.5_vae.safetensors"
+      ]
+    },
+    {
+      "id": 206,
+      "type": "AceStepSFTPreviewAudio",
+      "pos": [
+        958.5314930810566,
+        -796.5666697861992
+      ],
+      "size": [
+        344.96771974870023,
+        135
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 887
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "aux_id": "jeankassio/ComfyUI-AceStep_SFT",
+        "ver": "d8b7c6728354ebf651fefd4a283d47e325eb50a2",
+        "Node name for S&R": "AceStepSFTPreviewAudio"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 203,
+      "type": "AceStepSFTTextEncode",
+      "pos": [
+        522.1939098265887,
+        -328.9460031950459
+      ],
+      "size": [
+        400,
+        592
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 884
+        },
+        {
+          "name": "style_tags",
+          "shape": 7,
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "style_bpm",
+          "shape": 7,
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "style_keyscale",
+          "shape": 7,
+          "type": "STRING",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": []
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "aux_id": "jeankassio/ComfyUI-AceStep_SFT",
+        "ver": "d8b7c6728354ebf651fefd4a283d47e325eb50a2",
+        "Node name for S&R": "AceStepSFTTextEncode"
+      },
+      "widgets_values": [
+        "",
+        "",
+        false,
+        0,
+        "fixed",
+        164.6,
+        134,
+        "4",
+        "pt",
+        "G minor",
+        true,
+        2,
+        0.85,
+        0.9,
+        0,
+        0,
+        ""
+      ]
+    },
+    {
+      "id": 202,
+      "type": "AceStepSFTGenerate",
+      "pos": [
+        961.8786057799006,
+        -609.2764319139288
+      ],
+      "size": [
+        337.197265625,
+        878
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": null
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": null
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "latent_or_audio",
+          "shape": 7,
+          "type": "AUDIO,LATENT",
+          "link": null
+        },
+        {
+          "name": "cover_source",
+          "type": "AUDIO,LATENT",
+          "link": 901
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": null
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "links": null
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": null
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": null
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            887
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "jeankassio/ComfyUI-AceStep_SFT",
+        "ver": "d8b7c6728354ebf651fefd4a283d47e325eb50a2",
+        "Node name for S&R": "AceStepSFTGenerate"
+      },
+      "widgets_values": [
+        0,
+        "randomize",
+        50,
+        7,
+        "jkass_quality",
+        "sgm_uniform",
+        1,
+        60,
+        "ode",
+        "apg",
+        1,
+        0,
+        1,
+        0,
+        0,
+        true,
+        false,
+        0,
+        0,
+        -0.75,
+        2.5,
+        0.5,
+        0,
+        3,
+        -1,
+        -1,
+        0,
+        0,
+        0,
+        1,
+        3,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "id": 166,
+      "type": "MarkdownNote",
+      "pos": [
+        -87.14379331740551,
+        -775.3304643187938
+      ],
+      "size": [
+        515.0303622159091,
+        158.18177934126413
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.7",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "This is a technique that uses the merge model for music creation and the SFT model for refinement.\n\n**Model Links**\n\n**SFT**\n\n- [model.safetensors](https://huggingface.co/ACE-Step/acestep-v15-sft/blob/main/model.safetensors)\n"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 300,
+      "type": "LoadAudio",
+      "pos": [
+        525,
+        350
+      ],
+      "size": [
+        315,
+        58
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            901
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "example.wav",
+        "audio"
+      ]
+    },
+    {
+      "id": 301,
+      "type": "MarkdownNote",
+      "pos": [
+        525,
+        -100
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "# Cover / Remix\n\nThis workflow re-styles a source audio's structure to match the caption/lyrics.\n\n- **cover_source**: connect the audio to remix (LoadAudio).\n- **cover_noise_strength**: 0.0 = full noise start (max deviation), 1.0 = pure source.\n- **audio_cover_strength**: 1.0 = cover all the way; <1.0 = break free after that fraction of steps.\n- Duration auto-locks to the source length.\n- For turbo/merge: steps=8, cfg=1.0. For sft: steps=50, cfg=7.0."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    }
+  ],
+  "links": [
+    [
+      884,
+      204,
+      1,
+      203,
+      0,
+      "CLIP"
+    ],
+    [
+      885,
+      205,
+      0,
+      204,
+      0,
+      "MODEL"
+    ],
+    [
+      886,
+      205,
+      1,
+      204,
+      1,
+      "CLIP"
+    ],
+    [
+      887,
+      202,
+      5,
+      206,
+      0,
+      "AUDIO"
+    ],
+    [
+      901,
+      300,
+      0,
+      202,
+      5,
+      "AUDIO,LATENT"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "workflowRendererVersion": "LG",
+    "ue_links": [],
+    "ds": {
+      "scale": 0.6830134553650705,
+      "offset": [
+        755.4772972656973,
+        969.8186073746994
+      ]
+    },
+    "links_added_by_ue": [],
+    "frontendVersion": "1.42.8",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}

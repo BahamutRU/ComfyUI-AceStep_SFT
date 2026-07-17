@@ -97,6 +97,20 @@ Save Audio additionally supports:
 - **Accepts AUDIO or LATENT**: Connect any audio or latent output for img2img-style editing
 - **Batch Generation**: Generate multiple variations in parallel
 
+### 🎤 Cover / Remix
+
+ACE-Step supports a **cover** task that re-styles an existing audio's structure to match a new caption/lyrics. This is now exposed in the Generate node via three optional inputs:
+
+- **`cover_source`** (`AUDIO` or `LATENT`): the source audio to cover/remix. When connected, the node runs in **cover mode** — it tells the model about the source (via `is_covers=True` conditioning), so the model preserves the source's musical structure while changing the style/content described by the caption and lyrics.
+- **`cover_noise_strength`** (`0.0`–`1.0`, default `0.0`): how close the start stays to the source. `0.0` = start from full noise (maximum deviation), `1.0` = start from the source latent (closest to source).
+- **`audio_cover_strength`** (`0.0`–`1.0`, default `1.0`): fraction of steps that keep cover conditioning. `1.0` = cover conditioning for the whole run (stays closest to the source). `<1.0` = after this fraction of steps the conditioning switches to text-to-music, so the result breaks free from the source (a more "remixed" feel).
+
+**Cover vs. img2img (`latent_or_audio`):** these are different operations.
+- **img2img** (`latent_or_audio` + `denoise < 1.0`) only re-noises the source latent; the model does **not** know it is working with a source, so the structure drifts toward the text prompt and is largely lost.
+- **Cover** (`cover_source`) feeds the source into the model's conditioning context (the model was trained to use this), so the source structure is preserved during re-styling.
+
+`cover_source` and `latent_or_audio` are mutually exclusive. In cover mode the duration is locked to the source audio length (matching the official pipeline), and the LLM audio-code generation is skipped (it is unused for covers). Requires a `VAE` to be connected (the source is VAE-encoded into the conditioning latent).
+
 ### 🧠 Extended Conditioning Control
 
 - **Split Text/Lyric Guidance**: Independent `guidance_scale_text` and `guidance_scale_lyric`
@@ -366,6 +380,11 @@ Outputs:
 - **cfg_interval_start / cfg_interval_end** (0.0-1.0): Schedule fraction range
 - **shift** (0.0-5.0, default: 3.0): Timestep schedule shift
 
+#### Cover / Remix
+- **cover_source**: Source audio (AUDIO or LATENT) to cover/remix. Connect to run in cover mode (`is_covers=True`). Mutually exclusive with `latent_or_audio`.
+- **cover_noise_strength** (0.0-1.0, default: 0.0): Start closeness to source. 0.0 = full noise (max deviation), 1.0 = pure source (closest).
+- **audio_cover_strength** (0.0-1.0, default: 1.0): Fraction of steps with cover conditioning. <1.0 switches to text-to-music conditioning after that fraction of steps (more "remix").
+
 ### TextEncode - Parameters
 
 | Parameter | Range | Description |
@@ -473,6 +492,34 @@ TextEncode:
   → positive, negative
 
 Generate → Save Audio (format: flac)
+```
+
+### Example 5: Cover / Remix
+
+Re-style an existing song's structure to match a new caption/lyrics.
+
+```
+LoadAudio (or any AUDIO source):
+  → source_audio
+
+TextEncode:
+  caption: "epic orchestral cinematic, dramatic strings, powerful brass"
+  lyrics: (new lyrics, or reuse the original)
+  → positive, negative
+
+Generate:
+  positive / negative: (from TextEncode)
+  cover_source: (from LoadAudio)        ← enables cover mode
+  cover_noise_strength: 0.0             ← start from full noise (max deviation from source)
+  audio_cover_strength: 1.0             ← keep cover conditioning the whole run
+  duration: 0                           ← auto-locks to source length
+  steps: 8 (turbo/merge) / 50 (sft)
+  cfg: 1.0 (turbo/merge) / 7.0 (sft)
+  → Save Audio
+
+# For a more "remixed" feel, lower audio_cover_strength (e.g., 0.6) so the output
+# breaks free from the source structure after the first 60% of steps.
+# To stay closer to the source melody, raise cover_noise_strength (e.g., 0.3).
 ```
 
 ## 🐛 Troubleshooting
