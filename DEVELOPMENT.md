@@ -333,6 +333,7 @@ acestep/
 
 | Commit | What |
 |--------|------|
+| `cd1a1d0` | **Analysis model CPU offload** (fix Transcriber OOM on 16 GB) |
 | `92529ff` | Analysis models → `ComfyUI/models/`, `.gitignore` |
 | `e0f473c` | **Cover (remix) task** ported |
 | `c2cfe8e` | (upstream) bugfix Loras |
