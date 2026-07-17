@@ -2872,6 +2872,24 @@ class AceStepSFTGenerate:
                         "steps, so the result breaks free from the source ('remix' feel)."
                     ),
                 }),
+                # ---- Retake (variation) ----
+                "retake_variance": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": (
+                        "Generate a variation of the same seed. 0.0 = identical to the base "
+                        "seed (default). 1.0 = fully independent draw. Intermediate values "
+                        "blend the base-seed noise with an independent retake_seed noise on a "
+                        "circular arc, so the result stays recognisably related but varies. "
+                        "Use with a different retake_seed to get distinct variations."
+                    ),
+                }),
+                "retake_seed": ("INT", {
+                    "default": 0, "min": 0, "max": 0xffffffffffffffff,
+                    "tooltip": (
+                        "Seed for the variation noise when retake_variance > 0. Pair this with "
+                        "a fixed main seed and sweep retake_seed to explore variations."
+                    ),
+                }),
             },
         }
 
@@ -2936,6 +2954,8 @@ class AceStepSFTGenerate:
         cover_source=None,
         cover_noise_strength=0.0,
         audio_cover_strength=1.0,
+        retake_variance=0.0,
+        retake_seed=0,
     ):
         if denoise < 1.0 and latent_or_audio is None:
             raise ValueError(
@@ -3098,6 +3118,17 @@ class AceStepSFTGenerate:
             )
             noise_mask = _match_noise_mask_length(noise_mask, latent_length)
             noise = comfy.sample.prepare_noise(latent_image, seed, batch_inds)
+
+            # Retake (variation): variance-preserving blend with an independent
+            # noise draw seeded by retake_seed. Mirrors the official pipeline
+            # (modeling_acestep_v15_turbo.py:2042-2045): a circular-arc blend so
+            # variance is bounded -- v=0 leaves the base noise unchanged, v=1 is
+            # equivalent to using retake_seed as the main seed. Use a different
+            # retake_seed with a fixed main seed to explore related variations.
+            if retake_variance > 0.0:
+                retake_noise = comfy.sample.prepare_noise(latent_image, retake_seed, batch_inds)
+                v_rad = float(retake_variance) * (math.pi / 2.0)
+                noise = math.cos(v_rad) * noise + math.sin(v_rad) * retake_noise
 
             model = model.clone()
 

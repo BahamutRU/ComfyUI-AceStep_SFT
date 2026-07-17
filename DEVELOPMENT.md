@@ -201,16 +201,19 @@ history (`e3b014a "reference_audio bugfix"`) but **removed** in a later commit.
 Could be restored as a standalone conditioning input alongside cover. The core
 node `comfy_extras/nodes_ace.py:ReferenceAudio` already exists for this.
 
-### 5d. Retake (variation) — easy, not ported
-`modeling_acestep_v15_turbo.py:2042-2045`:
+### 5d. Retake (variation) — PORTED
+Official: `modeling_acestep_v15_turbo.py:2042-2045`:
 ```python
 if retake_variance > 0.0:
     retake_noise = self.prepare_noise(context_latents, retake_seed)
     v_rad = retake_variance * (pi/2)
     noise = cos(v_rad)*noise + sin(v_rad)*retake_noise
 ```
-Pure noise-space blend at sample start. Trivial to add: blend the initial noise
-with a second noise seeded by `retake_seed`. Inputs: `retake_seed`, `retake_variance`.
+Pure noise-space blend at sample start. Ported: node inputs `retake_seed`,
+`retake_variance`; blend happens right after `comfy.sample.prepare_noise`
+(`nodes.py:~3100`). `comfy.sample.prepare_noise(latent_image, seed)` ≡ official
+`prepare_noise` (seeded `torch.randn` of latent shape), so the blend is 1:1.
+Verified: v=0 → identical, v=1 → retake_seed, v=0.5 → related mix (norm preserved).
 
 ## 6. Other notable differences (non-task)
 
@@ -298,7 +301,7 @@ way to carry per-step data.
    `sampler_post_cfg_function` + waveform splice. ~2-3 sessions.
 2. **reference_audio** (timbre) — restore removed feature, moderate. See §5c.
    Standalone conditioning input. ~1 session.
-3. **Retake** (variations) — easy, quick win. See §5d. Noise blend. ~30 min.
+3. ~~**Retake** (variations)~~ — ✅ DONE (see §5d).
 4. **extract/lego/complete** — only if switching to base model. See §5b.
 
 ## 10. Quick-reference: official repo file map

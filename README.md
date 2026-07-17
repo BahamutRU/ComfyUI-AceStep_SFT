@@ -112,6 +112,15 @@ ACE-Step supports a **cover** task that re-styles an existing audio's structure 
 
 `cover_source` and `latent_or_audio` are mutually exclusive. In cover mode the duration is locked to the source audio length (matching the official pipeline), and the LLM audio-code generation is skipped (it is unused for covers). Requires a `VAE` to be connected (the source is VAE-encoded into the conditioning latent).
 
+### 🔁 Retake (variations)
+
+Generate variations of the same seed via a variance-preserving noise blend:
+
+- **`retake_variance`** (`0.0`–`1.0`, default `0.0`): how far to push the variation. `0.0` = identical to the base seed. `1.0` = fully independent draw. Intermediate values blend the base-seed noise with the `retake_seed` noise on a circular arc, so the result stays recognisably related but varies.
+- **`retake_seed`** (`INT`): seed for the variation noise. Pair it with a **fixed main `seed`** and sweep `retake_seed` to explore a family of related variations.
+
+Works with any task (text2music, cover) and model variant. Implementation matches the official pipeline (`modeling_acestep_v15_turbo.py:2042`).
+
 ### 🧠 Extended Conditioning Control
 
 - **Split Text/Lyric Guidance**: Independent `guidance_scale_text` and `guidance_scale_lyric`
@@ -397,6 +406,10 @@ Outputs:
 - **cover_source**: Source audio (AUDIO or LATENT) to cover/remix. Connect to run in cover mode (`is_covers=True`). Mutually exclusive with `latent_or_audio`.
 - **cover_noise_strength** (0.0-1.0, default: 0.0): Start closeness to source. 0.0 = full noise (max deviation), 1.0 = pure source (closest).
 - **audio_cover_strength** (0.0-1.0, default: 1.0): Fraction of steps with cover conditioning. <1.0 switches to text-to-music conditioning after that fraction of steps (more "remix").
+
+#### Retake (variations)
+- **retake_variance** (0.0-1.0, default: 0.0): 0.0 = identical to base seed, 1.0 = fully independent draw. Intermediate = related variation.
+- **retake_seed** (INT): Seed for the variation noise. Fix main seed, sweep retake_seed for a family of variations.
 
 ### TextEncode - Parameters
 
