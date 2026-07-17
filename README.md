@@ -176,6 +176,7 @@ ComfyUI/models/diffusion_models/     # AceStep 1.5 SFT model
 ComfyUI/models/text_encoders/        # Qwen encoders
 ComfyUI/models/vae/                  # VAE
 ComfyUI/models/loras/                # Optional AceStep 1.5 LoRAs
+ComfyUI/models/ACE-Step-Transcriber/ # Optional: Music Analyzer model (see below)
 ```
 
 3. **(Optional) Place LoRAs in the local folder:**
@@ -188,6 +189,16 @@ ComfyUI/custom_nodes/ComfyUI-AceStep_SFT/Loras/   # Local LoRA folder
    - **Nested zip artifact**: If your zip extracted a folder-inside-folder, the node detects this and fixes it automatically
 
 4. Restart ComfyUI - the nodes will appear under `audio/AceStep SFT`
+
+#### Analysis model storage
+
+The **Get Music Infos** node uses analysis models (the native **ACE-Step-Transcriber**, and optional alternatives like Qwen2-Audio/Whisper). These models are looked up in the following order:
+
+1. `ComfyUI/models/<model_name>/` — the canonical, shared store (recommended). This keeps large models (the Transcriber is ~22 GB) out of the custom_node folder, so they survive node reinstalls and are not tracked by git. For example the Transcriber lives at `ComfyUI/models/ACE-Step-Transcriber/`.
+2. `ComfyUI/custom_nodes/ComfyUI-AceStep_SFT/models/<model_name>/` — legacy fallback (kept for existing installs that already have the model there).
+3. If neither exists, the node downloads the model on first use into `ComfyUI/models/<model_name>/`.
+
+To use a model you already downloaded elsewhere, just place it (or symlink it) at `ComfyUI/models/<model_name>/` with its `config.json`.
 
 ## 🧩 Available Nodes
 
@@ -680,7 +691,7 @@ The node supports three classifier-free guidance modes, each with unique charact
 - **Key/Scale Detection**: Detects musical key and scale (e.g. "G minor")
 - **JSON Output**: Structured `music_infos` output with all analysis results
 - **Generation Parameters**: Control temperature, top_p, top_k, repetition_penalty, and seed
-- **Auto Model Download**: Models are downloaded on first use (~1-7 GB each)
+- **Auto Model Download**: Models are downloaded on first use (~1-7 GB each) into `ComfyUI/models/<model_name>/` (see [Analysis model storage](#analysis-model-storage) below)
 
 #### Native Analysis Model:
 
@@ -761,7 +772,12 @@ ComfyUI/models/diffusion_models/     # AceStep 1.5 SFT model
 ComfyUI/models/text_encoders/        # Qwen encoders
 ComfyUI/models/vae/                  # VAE
 ComfyUI/models/loras/                # Optional AceStep 1.5 LoRAs
+ComfyUI/models/ACE-Step-Transcriber/ # Optional: Music Analyzer model (auto-downloads on first use)
 ```
+
+> **Analysis models** (the Music Analyzer's Transcriber and optional alternatives) are
+> stored in `ComfyUI/models/<model_name>/` — not inside the custom_node folder. They
+> auto-download there on first use. See [Analysis model storage](#analysis-model-storage).
 
 3. **(Optional) Place LoRAs in the local folder:**
 ```

@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local model storage (analysis models now live in ComfyUI/models/)
+# Kept as a guard so a stray models/ folder is never committed.
+models/
+
+# Editor / tooling
+.zcode/
+.vscode/
+.idea/

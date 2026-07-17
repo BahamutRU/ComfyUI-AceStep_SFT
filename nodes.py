@@ -695,12 +695,30 @@ _audio_model_name = None
 
 
 def _get_model_dir(model_key):
-    """Return the local path for a given model key."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", model_key)
+    """Return the local path for a given model key.
+
+    Search order:
+      1. ``<ComfyUI>/models/<model_key>`` -- the canonical, shared model store
+         (respects ``--models-directory``). This keeps multi-GB analysis models
+         (e.g. the 21 GB ACE-Step-Transcriber) out of the custom_node folder so
+         they survive node reinstalls and are not seen by git.
+      2. ``<node folder>/models/<model_key>`` -- legacy location, kept as a
+         fallback so existing installs keep working without re-downloading.
+    Returns the first path that looks like a model (has a config.json), or the
+    ComfyUI path if neither exists yet (so downloads land in the new location).
+    """
+    primary = os.path.join(folder_paths.models_dir, model_key)
+    legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", model_key)
+
+    if os.path.isfile(os.path.join(primary, "config.json")):
+        return primary
+    if os.path.isfile(os.path.join(legacy, "config.json")):
+        return legacy
+    return primary
 
 
 def _ensure_model_downloaded(model_key):
-    """Download model to the node folder if not already present."""
+    """Download model to the ComfyUI models folder if not already present."""
     model_dir = _get_model_dir(model_key)
     config_path = os.path.join(model_dir, "config.json")
     if os.path.isfile(config_path):
@@ -708,6 +726,7 @@ def _ensure_model_downloaded(model_key):
     repo_id = _ANALYSIS_MODELS[model_key]
     from huggingface_hub import snapshot_download
     print(f"[AceStep SFT] Downloading {model_key} for music analysis (first time only)...")
+    print(f"[AceStep SFT]   -> {model_dir}")
     snapshot_download(repo_id, local_dir=model_dir)
     print(f"[AceStep SFT] {model_key} download complete.")
     return model_dir
