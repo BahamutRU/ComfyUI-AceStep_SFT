@@ -240,6 +240,29 @@ Analysis models (Transcriber etc.) now resolve via `_get_model_dir`
 (`nodes.py:697-717`): primary `ComfyUI/models/<key>/`, legacy node-folder fallback.
 See commit `92529ff`. Transcriber lives at `ComfyUI/models/ACE-Step-Transcriber/` (~22 GB).
 
+### 6e. Analysis model CPU offload (fixed — was OOM on 16 GB)
+The Transcriber (Qwen2.5-Omni, ~21 GB) does not fit in 16 GB VRAM. Previously
+`_get_analysis_device_map()` returned `{"": "cuda:0"}` (whole model on GPU) → OOM
+during load (BPM/Key still worked because they run on librosa/CPU, only tag/lyric
+extraction loads the model).
+
+**Fix:** a `cpu_offload` toggle on the Get Music Infos node drives
+`_analysis_offload_mode` ("full" | "offload"). In offload mode:
+- `_get_analysis_device_map()` → `"auto"`; `_get_analysis_max_memory()` →
+  `{<gpu_index>: ~90% free VRAM, "cpu": available RAM}` (both in bytes;
+  accelerate needs concrete sizes + integer GPU index, NOT `"auto"`/`"cuda:0"`).
+- accelerate splits the model GPU↔CPU (Transcriber: 20 modules GPU, 16 CPU,
+  ~11.9 GB VRAM). Slower generation, no OOM.
+
+Gotchas hit during implementation (don't repeat):
+- accelerate's `get_max_memory` rejects `"cpu": "auto"` and `"cuda:0"` keys — use
+  bytes and integer index.
+- Under dispatch, `model.device` is unreliable for inputs → use
+  `_model_input_device(model)` (`nodes.py`) which reads `hf_device_map` first,
+  falls back to `model.device`. All `inputs.to(model.device)` replaced.
+- Models that fit (Whisper, MERT, AST) keep using `device_map` without max_memory
+  — accelerate places them fully on GPU, so offload toggle is a no-op for them.
+
 ## 7. Key constants (for porting)
 
 | Constant | Value | Source |

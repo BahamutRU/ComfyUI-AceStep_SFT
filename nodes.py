@@ -693,6 +693,20 @@ _audio_model = None
 _audio_processor = None
 _audio_model_name = None
 
+# Analysis-model VRAM strategy. "full" loads the whole model on the GPU
+# (original behaviour; OOMs for the ~21 GB Transcriber on a 16 GB card).
+# "offload" uses accelerate layer-wise CPU offload so large models fit by
+# streaming layers GPU<->CPU. Set per-call via the node input.
+_analysis_offload_mode = "full"
+
+
+def set_analysis_offload_mode(mode):
+    """Set the analysis-model VRAM strategy: 'full' or 'offload'."""
+    global _analysis_offload_mode
+    if mode not in ("full", "offload"):
+        mode = "full"
+    _analysis_offload_mode = mode
+
 
 def _get_model_dir(model_key):
     """Return the local path for a given model key.
@@ -738,8 +752,82 @@ def _get_analysis_device():
 
 
 def _get_analysis_device_map():
+    """Device map for loading analysis models.
+
+    With layer-wise offload enabled, returns accelerate's ``"auto"`` strategy so
+    large models (e.g. the ~21 GB ACE-Step-Transcriber) are split GPU<->CPU and
+    fit on cards that can't hold the whole model. Without offload, maps the
+    whole model to one device (legacy behaviour).
+    """
+    if _analysis_offload_mode == "offload":
+        return "auto"
     device = _get_analysis_device()
     return {"": str(device)}
+
+
+def _get_analysis_max_memory():
+    """max_memory for accelerate. Only set when offloading; otherwise None.
+
+    Caps GPU at ~90% of free VRAM (leaving headroom for ComfyUI's diffusion
+    models) and CPU at available RAM. accelerate requires concrete byte sizes
+    and integer device indices (not 'cuda:0') in this version.
+    """
+    if _analysis_offload_mode != "offload":
+        return None
+    gpu_index = _get_gpu_index()
+    key = gpu_index if gpu_index is not None else 0
+    return {key: _available_vram_bytes(reserve_fraction=0.1), "cpu": _available_ram_bytes()}
+
+
+def _get_gpu_index():
+    """Integer GPU index of the active device, or None if not CUDA."""
+    try:
+        device = _get_analysis_device()
+        if device.type == "cuda":
+            return device.index if device.index is not None else 0
+    except Exception:
+        pass
+    return None
+
+
+def _available_vram_bytes(reserve_fraction=0.1):
+    """Free VRAM in bytes, leaving a reserve for ComfyUI's other models."""
+    device = _get_analysis_device()
+    try:
+        free, _total = torch.cuda.mem_get_info(device)
+        return int(free * (1.0 - reserve_fraction))
+    except Exception:
+        return 1 << 30  # 1 GB fallback
+
+
+def _available_ram_bytes():
+    """Available system RAM in bytes (for the CPU side of layer-wise offload)."""
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        pass
+    try:
+        return int(os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
+    except Exception:
+        return 8 << 30  # 8 GB fallback
+
+
+def _model_input_device(model):
+    """Device where a (possibly accelerate-dispatched) model expects its inputs.
+
+    For a fully-on-one-device model this is ``model.device``. For an
+    accelerate-dispatched model with a ``hf_device_map`` we use the device of
+    the first mapped module, which is where the forward pass starts.
+    """
+    hf_device_map = getattr(model, "hf_device_map", None)
+    if hf_device_map:
+        for _name, dev in hf_device_map.items():
+            try:
+                return torch.device(dev)
+            except Exception:
+                continue
+    return getattr(model, "device", torch.device(_get_analysis_device()))
 
 
 def _load_audio_model(model_key, use_flash_attn=False):
@@ -761,10 +849,18 @@ def _load_audio_model(model_key, use_flash_attn=False):
         low_cpu_mem_usage=True,
         use_safetensors=True,
     )
+    # Layer-wise CPU offload for large models (e.g. the ~21 GB Transcriber on a
+    # 16 GB card). max_memory is None in "full" mode (no offload), which is a
+    # no-op for transformers. In "offload" mode it caps GPU use so layers stream
+    # GPU<->CPU and the model fits even when it exceeds VRAM.
+    max_memory = _get_analysis_max_memory()
+    if max_memory is not None:
+        load_kwargs["max_memory"] = max_memory
     if use_flash_attn:
         load_kwargs["attn_implementation"] = "flash_attention_2"
         print(f"[AceStep SFT] Using flash_attention_2 for {model_key}")
-    print(f"[AceStep SFT] Loading {model_key} on {target_device}...")
+    offload_note = " (layer-wise CPU offload)" if _analysis_offload_mode == "offload" else ""
+    print(f"[AceStep SFT] Loading {model_key} on {target_device}{offload_note}...")
 
     if _is_acestep_transcriber_model(model_key):
         import warnings
@@ -1015,7 +1111,7 @@ def _extract_tags_qwen_omni(audio_dict, model, processor, max_new_tokens, audio_
 
     text_prompt = processor.apply_chat_template(conversation, add_generation_prompt=True, tokenize=False)
     inputs = processor(text=text_prompt, audio=[y], sampling_rate=16000, return_tensors="pt", padding=True)
-    inputs = inputs.to(model.device).to(model.dtype)
+    inputs = inputs.to(_model_input_device(model)).to(model.dtype)
     input_len = inputs["input_ids"].shape[-1]
     gk = {"max_new_tokens": max_new_tokens}
     # return_audio / use_audio_in_video are only valid for full Qwen2.5-Omni (has talker)
@@ -1060,7 +1156,7 @@ def _extract_tags_mert(audio_dict, model, processor):
     y = _prepare_audio_mono(audio_dict, 24000, 30)
 
     inputs = processor(y, sampling_rate=24000, return_tensors="pt")
-    inputs = inputs.to(model.device)
+    inputs = inputs.to(_model_input_device(model))
     with torch.inference_mode():
         outputs = model(**inputs, output_hidden_states=True)
     # Use last hidden state, average over time
@@ -1097,7 +1193,7 @@ def _extract_tags_qwen2_audio(audio_dict, model, processor, max_new_tokens, audi
 
     text_prompt = processor.apply_chat_template(conversation, add_generation_prompt=True, tokenize=False)
     inputs = processor(text=text_prompt, audio=[y], sampling_rate=16000, return_tensors="pt", padding=True)
-    inputs = inputs.to(model.device).to(model.dtype)
+    inputs = inputs.to(_model_input_device(model)).to(model.dtype)
     input_len = inputs["input_ids"].shape[-1]
     # Qwen2-Audio supports the standard generation kwargs.
     gk = {"max_new_tokens": max_new_tokens}
@@ -1128,7 +1224,7 @@ def _extract_tags_qwen2_audio(audio_dict, model, processor, max_new_tokens, audi
             # Re-process inputs with new model/processor
             text_prompt2 = processor.apply_chat_template(conversation, add_generation_prompt=True, tokenize=False)
             inputs = processor(text=text_prompt2, audio=[y], sampling_rate=16000, return_tensors="pt", padding=True)
-            inputs = inputs.to(model.device).to(model.dtype)
+            inputs = inputs.to(_model_input_device(model)).to(model.dtype)
             input_len = inputs["input_ids"].shape[-1]
             text_ids = model.generate(**inputs, **gk)
         else:
@@ -1334,7 +1430,7 @@ def _extract_tags_whisper_captioning(audio_dict, model, processor, audio_duratio
     y = _prepare_audio_mono(audio_dict, 16000, audio_duration)
 
     inputs = processor(y, sampling_rate=16000, return_tensors="pt")
-    inputs = inputs.to(model.device)
+    inputs = inputs.to(_model_input_device(model))
     gk = {"max_new_tokens": 200}
     gk.update(gen_kwargs or {})
     with torch.inference_mode():
@@ -1362,7 +1458,7 @@ def _extract_tags_acestep_transcriber(audio_dict, model, processor, max_new_toke
 
     text_prompt = processor.apply_chat_template(conversation, add_generation_prompt=True, tokenize=False)
     inputs = processor(text=text_prompt, audio=[y], sampling_rate=16000, return_tensors="pt", padding=True)
-    inputs = inputs.to(model.device).to(model.dtype)
+    inputs = inputs.to(_model_input_device(model)).to(model.dtype)
     input_len = inputs["input_ids"].shape[-1]
     gk = {
         "max_new_tokens": max(256, max_new_tokens),
@@ -1384,7 +1480,7 @@ def _extract_tags_whisper_asr(audio_dict, model, processor, max_new_tokens, audi
     y = _prepare_audio_mono(audio_dict, 16000, audio_duration)
 
     inputs = processor(y, sampling_rate=16000, return_tensors="pt")
-    input_features = inputs["input_features"].to(model.device)
+    input_features = inputs["input_features"].to(_model_input_device(model))
     if torch.is_floating_point(input_features):
         input_features = input_features.to(dtype=model.dtype)
 
@@ -1408,7 +1504,7 @@ def _extract_tags_ast(audio_dict, model, processor):
     y = _prepare_audio_mono(audio_dict, 16000, 30)
 
     inputs = processor(y, sampling_rate=16000, return_tensors="pt")
-    inputs = inputs.to(model.device)
+    inputs = inputs.to(_model_input_device(model))
     with torch.inference_mode():
         logits = model(**inputs).logits[0]
     probs = torch.sigmoid(logits)
@@ -1904,6 +2000,15 @@ class AceStepSFTMusicAnalyzer:
                     "default": False,
                     "tooltip": "Use FlashAttention-2 for the ACE-Step transcriber. Requires flash-attn package installed. Faster and uses less VRAM.",
                 }),
+                "cpu_offload": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": (
+                        "Layer-wise CPU offload for the analysis model. Enable on cards "
+                        "that can't hold the whole model (e.g. the ~21 GB Transcriber on "
+                        "16 GB VRAM). Streams layers GPU<->CPU: slower but prevents OOM. "
+                        "Models that fit in VRAM are kept fully on GPU either way."
+                    ),
+                }),
                 "temperature": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 2.0, "step": 0.05,
                     "tooltip": "Sampling temperature for transcription generation. 0 = deterministic and recommended for stable structure extraction.",
@@ -1939,11 +2044,21 @@ class AceStepSFTMusicAnalyzer:
 
     def analyze(self, audio, get_tags, get_bpm, get_keyscale,
                 max_new_tokens=256, audio_duration=60, unload_model=True, use_flash_attn=False,
+                cpu_offload=False,
                 temperature=0.0, top_p=1.0, top_k=0, repetition_penalty=1.1, seed=0):
         tags = ""
         detected_bpm = 0
         keyscale = ""
         model = _NATIVE_ANALYSIS_MODEL
+
+        # Apply the VRAM strategy before the model is (lazily) loaded. If the
+        # currently cached model was loaded under a different strategy, force a
+        # reload by clearing the cache so the new mode takes effect.
+        global _audio_model, _audio_model_name
+        new_mode = "offload" if cpu_offload else "full"
+        if new_mode != _analysis_offload_mode and _audio_model is not None:
+            _unload_audio_model()
+        set_analysis_offload_mode(new_mode)
 
         torch.manual_seed(seed)
         if torch.cuda.is_available():

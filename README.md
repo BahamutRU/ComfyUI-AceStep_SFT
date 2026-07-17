@@ -78,6 +78,7 @@ The node supports three classifier-free guidance modes, each with unique charact
 - **BPM Detection**: Automatic tempo detection via librosa
 - **Key/Scale Detection**: Detects musical key and scale (e.g. "G minor")
 - **JSON Output**: Structured `music_infos` output with all analysis results
+- **CPU Offload**: Enable `cpu_offload` on the Get Music Infos node to run the ~21 GB Transcriber on cards that can't hold it (e.g. 16 GB VRAM) via layer-wise GPU↔CPU streaming. Slower but prevents out-of-memory; models that fit in VRAM stay fully on GPU.
 
 ### 🔊 Audio Preview & Save with Waveform Visualizer
 
@@ -317,6 +318,7 @@ Inputs:
 - `temperature`, `top_p`, `top_k`, `repetition_penalty`, `seed`: Generation parameters
 - `unload_model`: Free VRAM after analysis
 - `use_flash_attn`: Enable Flash Attention 2 (if compatible)
+- `cpu_offload`: Layer-wise CPU offload for the analysis model. Enable on cards that can't hold the whole Transcriber (~21 GB) — e.g. 16 GB VRAM. Streams layers GPU↔CPU: slower but prevents OOM.
 
 Outputs:
 - `tags`: Comma-separated descriptive tags (STRING)
@@ -809,6 +811,7 @@ Inputs:
 - `temperature`, `top_p`, `top_k`, `repetition_penalty`, `seed`: Generation parameters
 - `unload_model`: Free VRAM after analysis
 - `use_flash_attn`: Enable Flash Attention 2 (if compatible)
+- `cpu_offload`: Layer-wise CPU offload for the analysis model. Enable on cards that can't hold the whole Transcriber (~21 GB) — e.g. 16 GB VRAM. Streams layers GPU↔CPU: slower but prevents OOM.
 
 Outputs:
 - `tags`: Comma-separated descriptive tags (STRING)
